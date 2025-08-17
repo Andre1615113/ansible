@@ -1,0 +1,80 @@
+---
+- name: Coletar IP e DNS externos (EC2 IMDSv2)
+  hosts: all                # ou um grupo específico (ex.: grafana)
+  gather_facts: false
+  become: false
+
+  vars:
+    imds_base: "http://169.254.169.254/latest"
+    imds_timeout: 3
+
+  tasks:
+    - name: Solicitar token IMDSv2
+      ansible.builtin.uri:
+        url: "{{ imds_base }}/api/token"
+        method: PUT
+        headers:
+          X-aws-ec2-metadata-token-ttl-seconds: "21600"
+        return_content: true
+        status_code: 200
+        timeout: "{{ imds_timeout }}"
+      register: imds_token
+      failed_when: false
+      changed_when: false
+
+    - name: Definir cabeçalhos IMDS (com token se disponível)
+      ansible.builtin.set_fact:
+        imds_headers: >-
+          {{ {'X-aws-ec2-metadata-token': imds_token.content}
+             if (imds_token.status|default(0)) == 200 and (imds_token.content|default('')|length) > 0
+             else {} }}
+
+    - name: Obter public-ipv4
+      ansible.builtin.uri:
+        url: "{{ imds_base }}/meta-data/public-ipv4"
+        method: GET
+        headers: "{{ imds_headers }}"
+        return_content: true
+        status_code: [200, 404]
+        timeout: "{{ imds_timeout }}"
+      register: public_ip_req
+      failed_when: false
+      changed_when: false
+
+    - name: Obter public-hostname
+      ansible.builtin.uri:
+        url: "{{ imds_base }}/meta-data/public-hostname"
+        method: GET
+        headers: "{{ imds_headers }}"
+        return_content: true
+        status_code: [200, 404]
+        timeout: "{{ imds_timeout }}"
+      register: public_dns_req
+      failed_when: false
+      changed_when: false
+
+    - name: Guardar valores como facts do host
+      ansible.builtin.set_fact:
+        public_ip_val: "{{ (public_ip_req.status == 200) | ternary(public_ip_req.content | trim, '') }}"
+        public_dns_val: "{{ (public_dns_req.status == 200) | ternary(public_dns_req.content | trim, '') }}"
+
+    - name: Exibir resultado deste host
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          public_ip: "{{ public_ip_val | default('') }}"
+          public_dns: "{{ public_dns_val | default('') }}"
+
+    # --- Sumário em CSV no nó de controle ---
+    - name: Gerar CSV com IP/DNS públicos (controller)
+      ansible.builtin.copy:
+        dest: "./public_endpoints.csv"
+        mode: "0644"
+        content: |-
+          host,public_ip,public_dns
+          {% for h in ansible_play_hosts_all %}
+          {{ h }},{{ (hostvars[h].public_ip_val | default('')) }},{{ (hostvars[h].public_dns_val | default('')) }}
+          {% endfor %}
+      run_once: true
+      delegate_to: localhost
+

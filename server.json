@@ -1,0 +1,60 @@
+{
+  "id": null,
+  "uid": "server-quick",
+  "title": "Server Quick Dashboard",
+  "tags": ["server", "quick"],
+  "timezone": "",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "stat",
+      "title": "CPU usage %",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"expr": "100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Memory used %",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"expr": "((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes) * 100"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Root FS used %",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"expr": "100 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|fuse.lxcfs|overlay\"} * 100 / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|fuse.lxcfs|overlay\"})"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU Load (1/5/15m)",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "node_load1"},
+        {"expr": "node_load5"},
+        {"expr": "node_load15"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Network rx/tx bytes/s",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "sum by(device) (irate(node_network_receive_bytes_total{device!~\"lo|docker.*|veth.*\"}[5m]))"},
+        {"expr": "sum by(device) (irate(node_network_transmit_bytes_total{device!~\"lo|docker.*|veth.*\"}[5m]))"}
+      ]
+    }
+  ]
+}
+

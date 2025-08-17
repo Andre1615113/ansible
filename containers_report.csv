@@ -1,0 +1,3 @@
+host,name,image,status,ports172.31.15.96,node_exporter,quay.io/prometheus/node-exporter:latest,Up 32 minutes,None
+172.31.15.96,prometheus,quay.io/prometheus/prometheus:latest,Up 31 minutes,None
+172.31.15.96,nginx,docker.io/library/nginx:alpine,Up 3 minutes,[{'host_ip': ''; 'container_port': 80; 'host_port': 8080; 'range': 1; 'protocol': 'tcp'}]

@@ -1,0 +1,51 @@
+---
+- name: Instalar Grafana no RHEL
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Adicionar repositório oficial do Grafana
+      ansible.builtin.yum_repository:
+        name: grafana
+        description: Grafana OSS
+        baseurl: https://packages.grafana.com/oss/rpm
+        enabled: yes
+        gpgcheck: yes
+        repo_gpgcheck: yes
+        gpgkey:
+          - https://packages.grafana.com/gpg.key
+        sslverify: yes
+        sslcacert: /etc/pki/tls/certs/ca-bundle.crt
+
+    - name: Instalar pacote grafana
+      ansible.builtin.dnf:
+        name: grafana
+        state: present
+        update_cache: true
+
+    - name: Habilitar e iniciar serviço
+      ansible.builtin.service:
+        name: grafana-server
+        enabled: true
+        state: started
+
+    # (Opcional) Abrir porta 3000 no firewalld
+    - name: Garantir firewalld e bindings Python
+      ansible.builtin.package:
+        name:
+          - firewalld
+          - python3-firewall
+        state: present
+
+    - name: Iniciar firewalld
+      ansible.builtin.service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Abrir 3000/tcp no firewalld
+      ansible.posix.firewalld:
+        port: 3000/tcp
+        permanent: true
+        immediate: true
+        state: enabled

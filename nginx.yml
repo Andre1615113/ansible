@@ -1,0 +1,81 @@
+---
+- name: Subir container NGINX via Podman (porta 8080)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    image_nginx: "docker.io/library/nginx:alpine"
+    host_http_port: 8080
+    webroot: /srv/nginx-html
+
+  tasks:
+    - name: Garantir Podman instalado
+      ansible.builtin.package:
+        name: podman
+        state: present
+
+    - name: Criar diretório do conteúdo
+      ansible.builtin.file:
+        path: "{{ webroot }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Publicar index.html
+      ansible.builtin.copy:
+        dest: "{{ webroot }}/index.html"
+        mode: '0644'
+        content: |
+          <!doctype html>
+          <html lang="pt-br">
+          <head><meta charset="utf-8"><title>Nginx via ansible-playbook</title></head>
+          <body style="font-family: Arial; margin:40px">
+            <h1>Nginx via ansible-playbook</h1>
+            <p>Host: {{ ansible_facts.hostname }}</p>
+            <p>IP inventário: {{ ansible_host | default(inventory_hostname) }}</p>
+            <p>Data/Hora: {{ ansible_date_time.iso8601 }}</p>
+          </body>
+          </html>
+
+    - name: Parar container antigo (se existir)
+      containers.podman.podman_container:
+        name: nginx
+        state: stopped
+      ignore_errors: true
+
+    - name: Subir container NGINX (porta 8080 -> 80)
+      containers.podman.podman_container:
+        name: nginx
+        image: "{{ image_nginx }}"
+        state: started
+        restart_policy: always
+        publish:
+          - "{{ host_http_port }}:80"
+        volume:
+          - "{{ webroot }}:/usr/share/nginx/html:Z,ro"
+
+    - name: Verificar firewalld
+      ansible.builtin.command: systemctl is-active firewalld
+      register: firewalld_status
+      changed_when: false
+      failed_when: false
+
+    - name: Abrir porta 8080/tcp (se firewalld ativo)
+      ansible.builtin.command: "firewall-cmd --permanent --add-port={{ host_http_port }}/tcp"
+      register: fw_add
+      changed_when: fw_add.rc == 0
+      failed_when: fw_add.rc not in [0, 252]
+      when: firewalld_status.rc == 0
+
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload
+      when:
+        - firewalld_status.rc == 0
+        - fw_add is changed
+
+    - name: Exibir URL de acesso
+      ansible.builtin.debug:
+        msg: "Acesse: http://{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}:{{ host_http_port }}/"
+

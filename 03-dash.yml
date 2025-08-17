@@ -1,0 +1,211 @@
+---
+- name: Server dashboard (Prometheus + node_exporter + Grafana)
+  hosts: grafana
+  become: true
+
+  collections:
+    - containers.podman
+    - community.grafana
+    - ansible.posix
+
+  vars:
+    grafana_user: admin
+    grafana_password: admin                      # passe -e grafana_password=... no run
+    grafana_url: "http://127.0.0.1:3000"         # chama o Grafana localmente
+
+    prom_config_dir: /etc/prometheus
+    prom_config_file: /etc/prometheus/prometheus.yml
+    prom_image: "quay.io/prometheus/prometheus:latest"
+    node_exporter_image: "quay.io/prometheus/node-exporter:latest"
+
+    # Dashboard JSON embutido
+    dashboard_json: |-
+      {
+        "id": null,
+        "uid": "server-quick",
+        "title": "Server Quick Dashboard",
+        "tags": ["server","quick"],
+        "schemaVersion": 38,
+        "version": 1,
+        "refresh": "10s",
+        "time": {"from":"now-1h","to":"now"},
+        "panels": [
+          {
+            "type":"stat","title":"CPU usage %","gridPos":{"x":0,"y":0,"w":8,"h":4},
+            "options":{"reduceOptions":{"calcs":["lastNotNull"],"fields":"","values":false}},
+            "targets":[{"expr":"100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"}]
+          },
+          {
+            "type":"stat","title":"Memory used %","gridPos":{"x":8,"y":0,"w":8,"h":4},
+            "options":{"reduceOptions":{"calcs":["lastNotNull"],"fields":"","values":false}},
+            "targets":[{"expr":"((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes) * 100"}]
+          },
+          {
+            "type":"stat","title":"Root FS used %","gridPos":{"x":16,"y":0,"w":8,"h":4},
+            "options":{"reduceOptions":{"calcs":["lastNotNull"],"fields":"","values":false}},
+            "targets":[{"expr":"100 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|fuse.lxcfs|overlay\"} * 100 / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|fuse.lxcfs|overlay\"})"}]
+          },
+          {
+            "type":"timeseries","title":"CPU Load (1/5/15m)","gridPos":{"x":0,"y":4,"w":12,"h":8},
+            "targets":[{"expr":"node_load1"},{"expr":"node_load5"},{"expr":"node_load15"}]
+          },
+          {
+            "type":"timeseries","title":"Network rx/tx bytes/s","gridPos":{"x":12,"y":4,"w":12,"h":8},
+            "targets":[
+              {"expr":"sum by(device) (irate(node_network_receive_bytes_total{device!~\"lo|docker.*|veth.*\"}[5m]))"},
+              {"expr":"sum by(device) (irate(node_network_transmit_bytes_total{device!~\"lo|docker.*|veth.*\"}[5m]))"}
+            ]
+          }
+        ]
+      }
+
+  pre_tasks:
+    - name: Add Grafana repo
+      ansible.builtin.yum_repository:
+        name: grafana
+        description: Grafana OSS
+        baseurl: https://packages.grafana.com/oss/rpm
+        enabled: yes
+        gpgcheck: yes
+        repo_gpgcheck: yes
+        gpgkey:
+          - https://packages.grafana.com/gpg.key
+        sslverify: yes
+        sslcacert: /etc/pki/tls/certs/ca-bundle.crt
+
+    - name: Install packages (grafana, podman, firewalld)
+      ansible.builtin.package:
+        name:
+          - grafana
+          - podman
+          - firewalld
+          - python3-firewall
+        state: present
+
+    - name: Enable and start grafana-server
+      ansible.builtin.service:
+        name: grafana-server
+        enabled: true
+        state: started
+
+    - name: Reset Grafana admin password with grafana-cli
+      ansible.builtin.command:
+        cmd: "grafana-cli admin reset-admin-password {{ grafana_password }}"
+      register: reset_out
+      changed_when: "'Admin password changed' in (reset_out.stdout | default('')) or reset_out.rc == 0"
+
+    - name: Wait for Grafana API
+      ansible.builtin.uri:
+        url: "{{ grafana_url }}/api/health"
+        status_code: 200
+        validate_certs: false
+      register: gf_health
+      retries: 30
+      delay: 2
+      until: gf_health.status == 200
+
+    - name: Ensure firewalld running
+      ansible.builtin.service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Open Grafana port 3000/tcp in firewalld
+      ansible.posix.firewalld:
+        port: 3000/tcp
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Create Prometheus config dir
+      ansible.builtin.file:
+        path: "{{ prom_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Write prometheus.yml
+      ansible.builtin.copy:
+        dest: "{{ prom_config_file }}"
+        mode: '0644'
+        content: |
+          global:
+            scrape_interval: 15s
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['127.0.0.1:9090']
+            - job_name: 'node'
+              static_configs:
+                - targets: ['127.0.0.1:9100']
+
+  tasks:
+    - name: Run node_exporter (host network)
+      containers.podman.podman_container:
+        name: node_exporter
+        image: "{{ node_exporter_image }}"
+        state: started
+        restart_policy: always
+        network: host
+        security_opt:
+          - "label=disable"
+        command:
+          - "--path.rootfs=/rootfs"
+          - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|run|var/lib/(docker|containers))($|/)"
+        volume:
+          - "/:/rootfs:ro,rslave"
+
+    - name: Run Prometheus (bind 127.0.0.1:9090)
+      containers.podman.podman_container:
+        name: prometheus
+        image: "{{ prom_image }}"
+        state: started
+        restart_policy: always
+        network: host
+        volume:
+          - "{{ prom_config_dir }}:/etc/prometheus:Z"
+        command:
+          - "--config.file=/etc/prometheus/prometheus.yml"
+          - "--storage.tsdb.path=/prometheus"
+          - "--web.listen-address=127.0.0.1:9090"
+
+    - name: Wait for Prometheus readiness on remote host
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:9090/-/ready"
+        status_code: 200
+        validate_certs: false
+      register: prom_ready
+      retries: 20
+      delay: 3
+      until: prom_ready.status == 200
+
+    - name: Create Prometheus datasource in Grafana (default)
+      community.grafana.grafana_datasource:
+        name: "Prometheus (local)"
+        ds_type: prometheus
+        access: proxy
+        ds_url: "http://127.0.0.1:9090"
+        is_default: true
+        state: present
+        url: "{{ grafana_url }}"                 # endpoint do Grafana
+        url_username: "{{ grafana_user }}"
+        url_password: "{{ grafana_password }}"
+        validate_certs: false
+
+    - name: Write dashboard JSON to file (remote)
+      ansible.builtin.copy:
+        dest: /tmp/server-simple-dashboard.json
+        mode: '0644'
+        content: "{{ dashboard_json }}"
+
+    - name: Install simple server dashboard (via path)
+      community.grafana.grafana_dashboard:
+        state: present
+        overwrite: true
+        path: /tmp/server-simple-dashboard.json  # <-- usa arquivo
+        url: "{{ grafana_url }}"
+        url_username: "{{ grafana_user }}"
+        url_password: "{{ grafana_password }}"
+        validate_certs: false
+
