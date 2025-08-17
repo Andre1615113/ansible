@@ -1,6 +1,6 @@
 ---
 - name: Server dashboard (Prometheus + node_exporter + Grafana)
-  hosts: grafana
+  hosts: all
   become: true
 
   collections:
